@@ -386,9 +386,11 @@ async function main() {
         action.id = dbAction.id;
       }
 
-      await executeCommand(`eval "await page.mouse.move(${x}, ${y})"`);
-      await executeCommand(`eval "await page.mouse.click(${x}, ${y})"`);
-
+      await executeCommand(`mouse move ${x} ${y}`);
+      await executeCommand(`mouse down`);
+      await executeCommand(`mouse up`);
+      // Wait a bit for page to react
+      await new Promise((r) => setTimeout(r, 500));
       await updateBrowserState();
       io.emit("status", {
         isOpen: state.isOpen,

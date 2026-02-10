@@ -14,28 +14,48 @@ export default function ScreenshotViewer({
   onClickAt,
 }: ScreenshotViewerProps) {
   const imgRef = useRef<HTMLImageElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const [clickMarker, setClickMarker] = useState<{ x: number; y: number } | null>(null);
 
   const handleClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
       const img = imgRef.current;
-      if (!img) return;
+      const container = containerRef.current;
+      if (!img || !container) return;
 
-      const rect = img.getBoundingClientRect();
-      const scaleX = img.naturalWidth / rect.width;
-      const scaleY = img.naturalHeight / rect.height;
+      const imgRect = img.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
 
-      const x = Math.round((e.clientX - rect.left) * scaleX);
-      const y = Math.round((e.clientY - rect.top) * scaleY);
+      // Click position relative to the image element
+      const clickOnImgX = e.clientX - imgRect.left;
+      const clickOnImgY = e.clientY - imgRect.top;
 
-      setClickMarker({
-        x: e.clientX - rect.left,
-        y: e.clientY - rect.top,
-      });
+      // Ignore clicks outside the image
+      if (
+        clickOnImgX < 0 ||
+        clickOnImgY < 0 ||
+        clickOnImgX > imgRect.width ||
+        clickOnImgY > imgRect.height
+      ) {
+        return;
+      }
 
+      // Scale from rendered image size to actual viewport coordinates
+      // naturalWidth/Height = screenshot pixel size = viewport size (DPR=1)
+      const scaleX = img.naturalWidth / imgRect.width;
+      const scaleY = img.naturalHeight / imgRect.height;
+
+      const actualX = Math.round(clickOnImgX * scaleX);
+      const actualY = Math.round(clickOnImgY * scaleY);
+
+      // Position marker relative to the container (absolute positioning)
+      const markerX = e.clientX - containerRect.left;
+      const markerY = e.clientY - containerRect.top;
+
+      setClickMarker({ x: markerX, y: markerY });
       setTimeout(() => setClickMarker(null), 600);
 
-      onClickAt(x, y);
+      onClickAt(actualX, actualY);
     },
     [onClickAt]
   );
@@ -89,6 +109,7 @@ export default function ScreenshotViewer({
 
   return (
     <div
+      ref={containerRef}
       className="screenshot-container flex items-center justify-center h-full relative click-overlay"
       style={{ background: "var(--bg-primary)", padding: "8px" }}
       onClick={handleClick}
@@ -125,12 +146,14 @@ export default function ScreenshotViewer({
         src={screenshot}
         alt="Browser Screenshot"
         className="animate-scale-in"
+        draggable={false}
         style={{
           maxWidth: "100%",
           maxHeight: "100%",
           objectFit: "contain",
           borderRadius: "6px",
           border: "1px solid var(--border-subtle)",
+          userSelect: "none",
         }}
       />
 
