@@ -62,7 +62,10 @@ const state: BrowserState = {
 };
 
 // Live screenshot streaming state
-let isExecuting = false;
+let isExecuting = false; // True while a command/click is running
+let pollFast = false; // True = 1s interval (active), false = 5s interval (idle)
+let consecutiveIdenticalFrames = 0; // Count of unchanged screenshots in a row
+const IDENTICAL_FRAMES_FOR_IDLE = 2; // Switch to 5s after this many identical frames
 let lastPolledScreenshot = ""; // Track last emitted screenshot to avoid duplicates
 let screenshotPollTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -155,8 +158,9 @@ async function getSnapshot(): Promise<string> {
 }
 
 // ── Live screenshot streaming loop ──
-// Polls screenshots continuously: every 1s when executing, every 5s when idle.
-// Only emits when there are connected clients and the screenshot has changed.
+// Polls screenshots continuously: every 1s when page is changing, every 5s when idle.
+// "Idle" = 2 consecutive identical screenshots (page visually stable).
+// Any new command resets to fast polling (1s).
 let ioRef: SocketIOServer | null = null;
 
 function startScreenshotPolling(io: SocketIOServer) {
@@ -164,11 +168,18 @@ function startScreenshotPolling(io: SocketIOServer) {
   scheduleNextPoll();
 }
 
+/** Switch to fast (1s) polling — called when a new command/click starts. */
+function enterFastPolling() {
+  pollFast = true;
+  consecutiveIdenticalFrames = 0;
+  scheduleNextPoll(); // Reschedule immediately at the new rate
+}
+
 function scheduleNextPoll() {
   if (screenshotPollTimer) {
     clearTimeout(screenshotPollTimer);
   }
-  const interval = isExecuting ? 1000 : 5000;
+  const interval = pollFast ? 1000 : 5000;
   screenshotPollTimer = setTimeout(pollScreenshot, interval);
 }
 
@@ -193,10 +204,25 @@ async function pollScreenshot() {
     }
 
     const screenshot = await takeScreenshot();
-    if (screenshot && screenshot !== lastPolledScreenshot) {
+    if (!screenshot) {
+      scheduleNextPoll();
+      return;
+    }
+
+    if (screenshot !== lastPolledScreenshot) {
+      // Page changed — emit new frame, reset idle counter
+      consecutiveIdenticalFrames = 0;
       lastPolledScreenshot = screenshot;
       state.lastScreenshot = screenshot;
       ioRef.emit("screenshot", screenshot);
+    } else {
+      // Page unchanged — increment idle counter
+      consecutiveIdenticalFrames++;
+
+      // If we've seen enough identical frames and we're in fast mode, slow down
+      if (pollFast && !isExecuting && consecutiveIdenticalFrames >= IDENTICAL_FRAMES_FOR_IDLE) {
+        pollFast = false;
+      }
     }
   } catch {
     // Ignore polling errors
@@ -350,7 +376,7 @@ async function main() {
 
       // Set executing flag for live streaming (faster polling)
       isExecuting = true;
-      scheduleNextPoll(); // Reschedule immediately for 1s interval
+      enterFastPolling(); // Switch to 1s interval immediately
 
       try {
         const result = await executeCommand(command);
@@ -414,7 +440,9 @@ async function main() {
         io.emit("action-update", { id: action.id, error: err.message });
       } finally {
         isExecuting = false;
-        scheduleNextPoll(); // Reschedule back to 5s interval
+        // Don't switch to slow polling here — let the screenshot loop
+        // detect idle via consecutive identical frames
+        consecutiveIdenticalFrames = 0; // Reset so we get fresh reads post-command
       }
     });
 
@@ -452,7 +480,7 @@ async function main() {
 
       // Set executing flag for live streaming
       isExecuting = true;
-      scheduleNextPoll();
+      enterFastPolling();
 
       try {
         await executeCommand(`mouse move ${x} ${y}`);
@@ -495,7 +523,7 @@ async function main() {
         });
       } finally {
         isExecuting = false;
-        scheduleNextPoll();
+        consecutiveIdenticalFrames = 0;
       }
     });
 
