@@ -61,6 +61,11 @@ const state: BrowserState = {
   activeSessionId: null,
 };
 
+// Live screenshot streaming state
+let isExecuting = false;
+let lastPolledScreenshot = ""; // Track last emitted screenshot to avoid duplicates
+let screenshotPollTimer: ReturnType<typeof setTimeout> | null = null;
+
 async function executeCommand(command: string): Promise<{ stdout: string; stderr: string }> {
   const fullCommand = `agent-browser ${command}`;
   try {
@@ -147,6 +152,57 @@ async function getSnapshot(): Promise<string> {
   } catch {
     return "";
   }
+}
+
+// ── Live screenshot streaming loop ──
+// Polls screenshots continuously: every 1s when executing, every 5s when idle.
+// Only emits when there are connected clients and the screenshot has changed.
+let ioRef: SocketIOServer | null = null;
+
+function startScreenshotPolling(io: SocketIOServer) {
+  ioRef = io;
+  scheduleNextPoll();
+}
+
+function scheduleNextPoll() {
+  if (screenshotPollTimer) {
+    clearTimeout(screenshotPollTimer);
+  }
+  const interval = isExecuting ? 1000 : 5000;
+  screenshotPollTimer = setTimeout(pollScreenshot, interval);
+}
+
+async function pollScreenshot() {
+  try {
+    // Skip if no IO server or no connected clients
+    if (!ioRef) {
+      scheduleNextPoll();
+      return;
+    }
+
+    const connectedCount = ioRef.engine?.clientsCount ?? 0;
+    if (connectedCount === 0) {
+      scheduleNextPoll();
+      return;
+    }
+
+    // Skip if browser is not open
+    if (!state.isOpen) {
+      scheduleNextPoll();
+      return;
+    }
+
+    const screenshot = await takeScreenshot();
+    if (screenshot && screenshot !== lastPolledScreenshot) {
+      lastPolledScreenshot = screenshot;
+      state.lastScreenshot = screenshot;
+      ioRef.emit("screenshot", screenshot);
+    }
+  } catch {
+    // Ignore polling errors
+  }
+
+  scheduleNextPoll();
 }
 
 async function main() {
@@ -292,6 +348,10 @@ async function main() {
         action.id = dbAction.id; // Use DB id
       }
 
+      // Set executing flag for live streaming (faster polling)
+      isExecuting = true;
+      scheduleNextPoll(); // Reschedule immediately for 1s interval
+
       try {
         const result = await executeCommand(command);
         action.result = result.stdout || "OK";
@@ -314,6 +374,7 @@ async function main() {
 
         if (screenshot) {
           state.lastScreenshot = screenshot;
+          lastPolledScreenshot = screenshot; // Sync with polling to avoid duplicate emit
           io.emit("screenshot", screenshot);
 
           // Save to file if session active
@@ -351,6 +412,9 @@ async function main() {
         }
 
         io.emit("action-update", { id: action.id, error: err.message });
+      } finally {
+        isExecuting = false;
+        scheduleNextPoll(); // Reschedule back to 5s interval
       }
     });
 
@@ -386,43 +450,53 @@ async function main() {
         action.id = dbAction.id;
       }
 
-      await executeCommand(`mouse move ${x} ${y}`);
-      await executeCommand(`mouse down`);
-      await executeCommand(`mouse up`);
-      // Wait a bit for page to react
-      await new Promise((r) => setTimeout(r, 500));
-      await updateBrowserState();
-      io.emit("status", {
-        isOpen: state.isOpen,
-        currentUrl: state.currentUrl,
-        pageTitle: state.pageTitle,
-      });
+      // Set executing flag for live streaming
+      isExecuting = true;
+      scheduleNextPoll();
 
-      const screenshot = await takeScreenshot();
-      let screenshotPath: string | null = null;
-      if (screenshot) {
-        state.lastScreenshot = screenshot;
-        io.emit("screenshot", screenshot);
-        if (state.activeSessionId) {
-          screenshotPath = await saveScreenshotToFile(state.activeSessionId, screenshot);
+      try {
+        await executeCommand(`mouse move ${x} ${y}`);
+        await executeCommand(`mouse down`);
+        await executeCommand(`mouse up`);
+        // Wait a bit for page to react
+        await new Promise((r) => setTimeout(r, 500));
+        await updateBrowserState();
+        io.emit("status", {
+          isOpen: state.isOpen,
+          currentUrl: state.currentUrl,
+          pageTitle: state.pageTitle,
+        });
+
+        const screenshot = await takeScreenshot();
+        let screenshotPath: string | null = null;
+        if (screenshot) {
+          state.lastScreenshot = screenshot;
+          lastPolledScreenshot = screenshot; // Sync with polling
+          io.emit("screenshot", screenshot);
+          if (state.activeSessionId) {
+            screenshotPath = await saveScreenshotToFile(state.activeSessionId, screenshot);
+          }
         }
-      }
 
-      if (dbActionId) {
-        updateAction(dbActionId, {
+        if (dbActionId) {
+          updateAction(dbActionId, {
+            result: "OK",
+            screenshot_path: screenshotPath,
+            url: state.currentUrl || null,
+            page_title: state.pageTitle || null,
+          });
+        }
+
+        action.result = "OK";
+        io.emit("action-update", {
+          id: action.id,
           result: "OK",
           screenshot_path: screenshotPath,
-          url: state.currentUrl || null,
-          page_title: state.pageTitle || null,
         });
+      } finally {
+        isExecuting = false;
+        scheduleNextPoll();
       }
-
-      action.result = "OK";
-      io.emit("action-update", {
-        id: action.id,
-        result: "OK",
-        screenshot_path: screenshotPath,
-      });
     });
 
     socket.on("disconnect", () => {
@@ -436,9 +510,13 @@ async function main() {
       const screenshot = await takeScreenshot();
       if (screenshot) {
         state.lastScreenshot = screenshot;
+        lastPolledScreenshot = screenshot;
       }
     }
   });
+
+  // Start live screenshot streaming
+  startScreenshotPolling(io);
 
   httpServer.listen(port, hostname, () => {
     console.log(`\n  ⚡ Agent Browser Viewer V2 running at http://${hostname}:${port}\n`);
