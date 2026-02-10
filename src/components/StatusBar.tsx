@@ -5,6 +5,7 @@ interface StatusBarProps {
   isOpen: boolean;
   lastActionTime: number;
   actionsCount: number;
+  sessionName?: string;
 }
 
 function formatTimestamp(ts: number): string {
@@ -23,6 +24,7 @@ export default function StatusBar({
   isOpen,
   lastActionTime,
   actionsCount,
+  sessionName,
 }: StatusBarProps) {
   return (
     <div
@@ -71,6 +73,30 @@ export default function StatusBar({
         </span>
       </div>
 
+      {/* Session */}
+      {sessionName && (
+        <div className="flex items-center gap-1.5">
+          <span
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: "10px",
+              color: "var(--text-muted)",
+            }}
+          >
+            Session:
+          </span>
+          <span
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: "10px",
+              color: "var(--accent)",
+            }}
+          >
+            {sessionName}
+          </span>
+        </div>
+      )}
+
       {/* Spacer */}
       <div className="flex-1" />
 
@@ -105,7 +131,7 @@ export default function StatusBar({
           opacity: 0.5,
         }}
       >
-        Agent Browser Viewer
+        Agent Browser Viewer v2
       </span>
     </div>
   );

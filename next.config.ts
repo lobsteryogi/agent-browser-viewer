@@ -1,8 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // Allow large screenshot payloads
-  serverExternalPackages: ["socket.io"],
+  basePath: "/apps/browser-viewer",
+  serverExternalPackages: ["socket.io", "better-sqlite3"],
 };
 
 export default nextConfig;

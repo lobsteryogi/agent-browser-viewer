@@ -3,14 +3,29 @@ import next from "next";
 import { Server as SocketIOServer } from "socket.io";
 import { exec } from "child_process";
 import { promisify } from "util";
-import { readFile } from "fs/promises";
+import { readFile, mkdir, writeFile } from "fs/promises";
 import { existsSync } from "fs";
 import path from "path";
+import {
+  getDb,
+  createSession,
+  insertAction,
+  updateAction,
+  updateSession,
+  getActiveSessionByName,
+  getSession,
+  listSessions,
+  getSessionActions,
+  type SessionRow,
+  type ActionRow,
+} from "./src/lib/db.js";
 
 const execAsync = promisify(exec);
 const dev = process.env.NODE_ENV !== "production";
 const hostname = "0.0.0.0";
 const port = 3458;
+
+const SCREENSHOTS_DIR = path.join(process.cwd(), "data", "screenshots");
 
 interface ActionEntry {
   id: string;
@@ -19,6 +34,10 @@ interface ActionEntry {
   timestamp: number;
   result?: string;
   error?: string;
+  screenshot_path?: string;
+  url?: string;
+  page_title?: string;
+  session_id?: string;
 }
 
 interface BrowserState {
@@ -28,6 +47,7 @@ interface BrowserState {
   lastScreenshot: string;
   actions: ActionEntry[];
   snapshotTree: string;
+  activeSessionId: string | null;
 }
 
 const state: BrowserState = {
@@ -37,31 +57,8 @@ const state: BrowserState = {
   lastScreenshot: "",
   actions: [],
   snapshotTree: "",
+  activeSessionId: null,
 };
-
-function getActionEmoji(command: string): string {
-  const cmd = command.toLowerCase().trim();
-  if (cmd.startsWith("open")) return "🌐";
-  if (cmd.startsWith("click")) return "👆";
-  if (cmd.startsWith("dblclick")) return "👆👆";
-  if (cmd.startsWith("fill") || cmd.startsWith("type")) return "⌨️";
-  if (cmd.startsWith("screenshot")) return "📸";
-  if (cmd.startsWith("scroll")) return "📜";
-  if (cmd.startsWith("hover")) return "🎯";
-  if (cmd.startsWith("press")) return "⌨️";
-  if (cmd.startsWith("select")) return "📋";
-  if (cmd.startsWith("snapshot")) return "🌳";
-  if (cmd.startsWith("reload") || cmd.startsWith("refresh")) return "🔄";
-  if (cmd.startsWith("back")) return "⬅️";
-  if (cmd.startsWith("forward")) return "➡️";
-  if (cmd.startsWith("close")) return "🚪";
-  if (cmd.startsWith("eval")) return "⚡";
-  if (cmd.startsWith("wait")) return "⏳";
-  if (cmd.startsWith("drag")) return "🖱️";
-  if (cmd.startsWith("focus")) return "🔍";
-  if (cmd.startsWith("check") || cmd.startsWith("uncheck")) return "☑️";
-  return "▶️";
-}
 
 async function executeCommand(command: string): Promise<{ stdout: string; stderr: string }> {
   const fullCommand = `agent-browser ${command}`;
@@ -87,7 +84,6 @@ async function takeScreenshot(): Promise<string> {
     if (existsSync(tmpPath)) {
       const buffer = await readFile(tmpPath);
       const base64 = buffer.toString("base64");
-      // Clean up
       execAsync(`rm -f ${tmpPath}`).catch(() => {});
       return `data:image/png;base64,${base64}`;
     }
@@ -95,6 +91,30 @@ async function takeScreenshot(): Promise<string> {
     // Ignore screenshot errors
   }
   return "";
+}
+
+async function saveScreenshotToFile(
+  sessionId: string,
+  base64Data: string
+): Promise<string | null> {
+  if (!base64Data || !base64Data.startsWith("data:image")) return null;
+
+  try {
+    const dir = path.join(SCREENSHOTS_DIR, sessionId);
+    await mkdir(dir, { recursive: true });
+
+    const timestamp = Date.now();
+    const filename = `${timestamp}.png`;
+    const filePath = path.join(dir, filename);
+
+    const raw = base64Data.replace(/^data:image\/\w+;base64,/, "");
+    await writeFile(filePath, Buffer.from(raw, "base64"));
+
+    // Return relative path for DB storage
+    return `${sessionId}/${filename}`;
+  } catch {
+    return null;
+  }
 }
 
 async function updateBrowserState(): Promise<void> {
@@ -129,6 +149,9 @@ async function getSnapshot(): Promise<string> {
 }
 
 async function main() {
+  // Initialize DB
+  getDb();
+
   const app = next({ dev, hostname, port });
   const handle = app.getRequestHandler();
   await app.prepare();
@@ -138,11 +161,12 @@ async function main() {
   });
 
   const io = new SocketIOServer(httpServer, {
+    path: "/apps/browser-viewer/socket.io",
     cors: { origin: "*" },
     maxHttpBufferSize: 50 * 1024 * 1024,
   });
 
-  // Store io on global for API routes
+  // Store on global for API routes
   (globalThis as Record<string, unknown>).__socketIO = io;
   (globalThis as Record<string, unknown>).__browserState = state;
 
@@ -160,12 +184,84 @@ async function main() {
       socket.emit("screenshot", state.lastScreenshot);
     }
 
+    // Send active session info
+    if (state.activeSessionId) {
+      const session = getSession(state.activeSessionId);
+      if (session) {
+        socket.emit("session-info", session);
+      }
+    }
+
+    // Send sessions list
+    socket.emit("sessions-list", listSessions());
+
     // Send action history
     state.actions.forEach((action) => {
       socket.emit("action", action);
     });
 
-    // Handle command execution
+    // ── Session management ──
+
+    socket.on("create-session", (data: { name: string }) => {
+      const session = createSession(data.name, "viewer");
+      state.activeSessionId = session.id;
+      state.actions = [];
+      io.emit("session-info", session);
+      io.emit("sessions-list", listSessions());
+      io.emit("actions-clear");
+    });
+
+    socket.on("close-session", () => {
+      if (state.activeSessionId) {
+        updateSession(state.activeSessionId, { status: "closed" });
+        const session = getSession(state.activeSessionId);
+        state.activeSessionId = null;
+        if (session) {
+          io.emit("session-info", null);
+        }
+        io.emit("sessions-list", listSessions());
+      }
+    });
+
+    socket.on("switch-session", (sessionId: string) => {
+      const session = getSession(sessionId);
+      if (session) {
+        state.activeSessionId = session.id;
+        // Load actions from DB
+        const dbActions = getSessionActions(session.id);
+        state.actions = dbActions.map((a) => ({
+          id: a.id,
+          type: a.command.split(" ")[0],
+          command: a.command,
+          timestamp: a.timestamp,
+          result: a.result ?? undefined,
+          error: a.error ?? undefined,
+          screenshot_path: a.screenshot_path ?? undefined,
+          url: a.url ?? undefined,
+          page_title: a.page_title ?? undefined,
+          session_id: a.session_id,
+        }));
+        io.emit("session-info", session);
+        io.emit("actions-clear");
+        state.actions.forEach((action) => {
+          io.emit("action", action);
+        });
+      }
+    });
+
+    socket.on("rename-session", (data: { name: string }) => {
+      if (state.activeSessionId) {
+        updateSession(state.activeSessionId, { name: data.name });
+        const session = getSession(state.activeSessionId);
+        if (session) {
+          io.emit("session-info", session);
+          io.emit("sessions-list", listSessions());
+        }
+      }
+    });
+
+    // ── Command execution ──
+
     socket.on("command", async (command: string) => {
       const actionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const action: ActionEntry = {
@@ -173,6 +269,7 @@ async function main() {
         type: command.split(" ")[0],
         command,
         timestamp: Date.now(),
+        session_id: state.activeSessionId ?? undefined,
       };
 
       // Broadcast action start
@@ -180,6 +277,17 @@ async function main() {
       state.actions.push(action);
       if (state.actions.length > 200) {
         state.actions = state.actions.slice(-200);
+      }
+
+      // Insert action into DB if session is active
+      let dbActionId: string | null = null;
+      if (state.activeSessionId) {
+        const dbAction = insertAction({
+          session_id: state.activeSessionId,
+          command,
+        });
+        dbActionId = dbAction.id;
+        action.id = dbAction.id; // Use DB id
       }
 
       try {
@@ -198,28 +306,49 @@ async function main() {
           pageTitle: state.pageTitle,
         });
 
-        // Take screenshot after action (unless the command IS screenshot)
-        if (!command.startsWith("screenshot")) {
-          const screenshot = await takeScreenshot();
-          if (screenshot) {
-            state.lastScreenshot = screenshot;
-            io.emit("screenshot", screenshot);
-          }
-        } else if (command.startsWith("screenshot")) {
-          // For screenshot command, also grab and send it
-          const screenshot = await takeScreenshot();
-          if (screenshot) {
-            state.lastScreenshot = screenshot;
-            io.emit("screenshot", screenshot);
+        // Take screenshot
+        const screenshot = await takeScreenshot();
+        let screenshotPath: string | null = null;
+
+        if (screenshot) {
+          state.lastScreenshot = screenshot;
+          io.emit("screenshot", screenshot);
+
+          // Save to file if session active
+          if (state.activeSessionId) {
+            screenshotPath = await saveScreenshotToFile(state.activeSessionId, screenshot);
           }
         }
 
-        // Update action with result
-        io.emit("action-update", { id: actionId, result: action.result, error: action.error });
+        // Update DB action
+        if (dbActionId && state.activeSessionId) {
+          updateAction(dbActionId, {
+            result: action.result,
+            error: action.error ?? null,
+            screenshot_path: screenshotPath,
+            url: state.currentUrl || null,
+            page_title: state.pageTitle || null,
+          });
+        }
+
+        // Emit action update
+        io.emit("action-update", {
+          id: action.id,
+          result: action.result,
+          error: action.error,
+          screenshot_path: screenshotPath,
+          url: state.currentUrl,
+          page_title: state.pageTitle,
+        });
       } catch (error: unknown) {
         const err = error as Error;
         action.error = err.message;
-        io.emit("action-update", { id: actionId, error: err.message });
+
+        if (dbActionId) {
+          updateAction(dbActionId, { error: err.message });
+        }
+
+        io.emit("action-update", { id: action.id, error: err.message });
       }
     });
 
@@ -239,10 +368,21 @@ async function main() {
         type: "click",
         command: `mouse move ${x} ${y} && click`,
         timestamp: Date.now(),
+        session_id: state.activeSessionId ?? undefined,
       };
 
       io.emit("action", action);
       state.actions.push(action);
+
+      let dbActionId: string | null = null;
+      if (state.activeSessionId) {
+        const dbAction = insertAction({
+          session_id: state.activeSessionId,
+          command: action.command,
+        });
+        dbActionId = dbAction.id;
+        action.id = dbAction.id;
+      }
 
       await executeCommand(`eval "await page.mouse.move(${x}, ${y})"`);
       await executeCommand(`eval "await page.mouse.click(${x}, ${y})"`);
@@ -255,13 +395,30 @@ async function main() {
       });
 
       const screenshot = await takeScreenshot();
+      let screenshotPath: string | null = null;
       if (screenshot) {
         state.lastScreenshot = screenshot;
         io.emit("screenshot", screenshot);
+        if (state.activeSessionId) {
+          screenshotPath = await saveScreenshotToFile(state.activeSessionId, screenshot);
+        }
+      }
+
+      if (dbActionId) {
+        updateAction(dbActionId, {
+          result: "OK",
+          screenshot_path: screenshotPath,
+          url: state.currentUrl || null,
+          page_title: state.pageTitle || null,
+        });
       }
 
       action.result = "OK";
-      io.emit("action-update", { id: actionId, result: "OK" });
+      io.emit("action-update", {
+        id: action.id,
+        result: "OK",
+        screenshot_path: screenshotPath,
+      });
     });
 
     socket.on("disconnect", () => {
@@ -280,7 +437,7 @@ async function main() {
   });
 
   httpServer.listen(port, hostname, () => {
-    console.log(`\n  ⚡ Agent Browser Viewer running at http://${hostname}:${port}\n`);
+    console.log(`\n  ⚡ Agent Browser Viewer V2 running at http://${hostname}:${port}\n`);
   });
 }
 

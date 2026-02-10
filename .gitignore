@@ -13,6 +13,12 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# data
+data/viewer.db
+data/viewer.db-wal
+data/viewer.db-shm
+data/screenshots/
+
 # misc
 .DS_Store
 *.pem

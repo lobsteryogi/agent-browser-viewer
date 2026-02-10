@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { io, Socket } from "socket.io-client";
+import Link from "next/link";
 import ActionLog from "@/components/ActionLog";
 import ScreenshotViewer from "@/components/ScreenshotViewer";
 import URLBar from "@/components/URLBar";
@@ -9,6 +10,7 @@ import CommandInput from "@/components/CommandInput";
 import QuickActions from "@/components/QuickActions";
 import StatusBar from "@/components/StatusBar";
 import SnapshotPanel from "@/components/SnapshotPanel";
+import SessionBar from "@/components/SessionBar";
 
 interface ActionEntry {
   id: string;
@@ -17,12 +19,30 @@ interface ActionEntry {
   timestamp: number;
   result?: string;
   error?: string;
+  screenshot_path?: string;
 }
 
 interface BrowserStatus {
   isOpen: boolean;
   currentUrl: string;
   pageTitle: string;
+}
+
+interface SessionInfo {
+  id: string;
+  name: string;
+  source: string;
+  status: string;
+  created_at: number;
+  updated_at: number;
+}
+
+interface SessionMeta {
+  id: string;
+  name: string;
+  source: string;
+  status: string;
+  action_count: number;
 }
 
 export default function Home() {
@@ -38,10 +58,12 @@ export default function Home() {
   const [snapshotTree, setSnapshotTree] = useState<string>("");
   const [showSnapshot, setShowSnapshot] = useState(false);
   const [isExecuting, setIsExecuting] = useState(false);
+  const [activeSession, setActiveSession] = useState<SessionInfo | null>(null);
+  const [sessionsList, setSessionsList] = useState<SessionMeta[]>([]);
   const lastActionTime = useRef<number>(0);
 
   useEffect(() => {
-    const s = io({ transports: ["websocket", "polling"] });
+    const s = io({ path: "/apps/browser-viewer/socket.io", transports: ["websocket", "polling"] });
 
     s.on("connect", () => {
       setConnected(true);
@@ -62,7 +84,6 @@ export default function Home() {
 
     s.on("action", (action: ActionEntry) => {
       setActions((prev) => {
-        // Avoid duplicates
         if (prev.find((a) => a.id === action.id)) return prev;
         return [...prev, action];
       });
@@ -70,11 +91,11 @@ export default function Home() {
       setIsExecuting(true);
     });
 
-    s.on("action-update", (update: { id: string; result?: string; error?: string }) => {
+    s.on("action-update", (update: { id: string; result?: string; error?: string; screenshot_path?: string }) => {
       setActions((prev) =>
         prev.map((a) =>
           a.id === update.id
-            ? { ...a, result: update.result, error: update.error }
+            ? { ...a, result: update.result, error: update.error, screenshot_path: update.screenshot_path }
             : a
         )
       );
@@ -83,6 +104,19 @@ export default function Home() {
 
     s.on("snapshot", (tree: string) => {
       setSnapshotTree(tree);
+    });
+
+    s.on("session-info", (session: SessionInfo | null) => {
+      setActiveSession(session);
+    });
+
+    s.on("sessions-list", (sessions: SessionMeta[]) => {
+      setSessionsList(sessions);
+    });
+
+    s.on("actions-clear", () => {
+      setActions([]);
+      setScreenshot("");
     });
 
     setSocket(s);
@@ -117,8 +151,51 @@ export default function Home() {
     [socket]
   );
 
+  const createSession = useCallback(
+    (name: string) => {
+      if (socket) {
+        socket.emit("create-session", { name });
+      }
+    },
+    [socket]
+  );
+
+  const closeSession = useCallback(() => {
+    if (socket) {
+      socket.emit("close-session");
+    }
+  }, [socket]);
+
+  const switchSession = useCallback(
+    (sessionId: string) => {
+      if (socket) {
+        socket.emit("switch-session", sessionId);
+      }
+    },
+    [socket]
+  );
+
+  const renameSession = useCallback(
+    (name: string) => {
+      if (socket) {
+        socket.emit("rename-session", { name });
+      }
+    },
+    [socket]
+  );
+
   return (
     <div className="flex flex-col h-screen" style={{ background: "var(--bg-primary)" }}>
+      {/* Session Bar */}
+      <SessionBar
+        activeSession={activeSession}
+        sessionsList={sessionsList}
+        onCreateSession={createSession}
+        onCloseSession={closeSession}
+        onSwitchSession={switchSession}
+        onRenameSession={renameSession}
+      />
+
       {/* URL Bar */}
       <URLBar
         url={status.currentUrl}
@@ -183,6 +260,7 @@ export default function Home() {
         isOpen={status.isOpen}
         lastActionTime={lastActionTime.current}
         actionsCount={actions.length}
+        sessionName={activeSession?.name}
       />
     </div>
   );
