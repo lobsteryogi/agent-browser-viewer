@@ -20,6 +20,7 @@ interface ActionEntry {
   result?: string;
   error?: string;
   screenshot_path?: string;
+  nlpOriginal?: string;
 }
 
 interface BrowserStatus {
@@ -127,9 +128,9 @@ export default function Home() {
   }, []);
 
   const sendCommand = useCallback(
-    (command: string) => {
+    (command: string, nlpOriginal?: string) => {
       if (socket && command.trim()) {
-        socket.emit("command", command.trim());
+        socket.emit("command", command.trim(), nlpOriginal || undefined);
       }
     },
     [socket]
@@ -241,7 +242,7 @@ export default function Home() {
               onCommand={sendCommand}
               onSnapshot={requestSnapshot}
             />
-            <CommandInput onSubmit={sendCommand} isExecuting={isExecuting} />
+            <CommandInput onSubmit={sendCommand} isExecuting={isExecuting} snapshotTree={snapshotTree} />
           </div>
         </div>
 

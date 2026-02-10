@@ -9,6 +9,7 @@ interface ActionEntry {
   timestamp: number;
   result?: string;
   error?: string;
+  nlpOriginal?: string;
 }
 
 const ACTION_EMOJIS: Record<string, string> = {
@@ -125,6 +126,24 @@ export default function ActionLog({ actions }: { actions: ActionEntry[] }) {
               animationDelay: `${Math.min(index * 0.03, 0.3)}s`,
             }}
           >
+            {/* NLP original input */}
+            {action.nlpOriginal && (
+              <div className="flex items-center gap-1 mb-0.5">
+                <span style={{ fontSize: "10px" }}>🧠</span>
+                <span
+                  className="truncate"
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: "9px",
+                    color: "#a78bfa",
+                    fontStyle: "italic",
+                  }}
+                  title={action.nlpOriginal}
+                >
+                  &ldquo;{action.nlpOriginal}&rdquo;
+                </span>
+              </div>
+            )}
             <div className="flex items-center gap-1.5">
               <span style={{ fontSize: "12px" }}>{getEmoji(action.type)}</span>
               <span

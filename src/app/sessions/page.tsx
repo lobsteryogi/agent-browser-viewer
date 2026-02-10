@@ -86,7 +86,7 @@ export default function SessionsPage() {
         }}
       >
         <Link
-          href="/apps/browser-viewer"
+          href="/"
           style={{
             fontFamily: "var(--font-mono)",
             fontSize: "12px",
@@ -188,7 +188,7 @@ export default function SessionsPage() {
             {sessions.map((session, i) => (
               <Link
                 key={session.id}
-                href={`/apps/browser-viewer/sessions/${session.id}`}
+                href={`/sessions/${session.id}`}
                 className="animate-fade-in-up"
                 style={{
                   textDecoration: "none",

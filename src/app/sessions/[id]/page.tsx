@@ -194,7 +194,7 @@ export default function SessionDetailPage() {
           Session not found
         </span>
         <Link
-          href="/apps/browser-viewer/sessions"
+          href="/sessions"
           style={{
             fontFamily: "var(--font-mono)",
             fontSize: "12px",
@@ -227,7 +227,7 @@ export default function SessionDetailPage() {
         }}
       >
         <Link
-          href="/apps/browser-viewer/sessions"
+          href="/sessions"
           style={{
             fontFamily: "var(--font-mono)",
             fontSize: "12px",

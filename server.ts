@@ -38,6 +38,7 @@ interface ActionEntry {
   url?: string;
   page_title?: string;
   session_id?: string;
+  nlpOriginal?: string;
 }
 
 interface BrowserState {
@@ -262,7 +263,7 @@ async function main() {
 
     // ── Command execution ──
 
-    socket.on("command", async (command: string) => {
+    socket.on("command", async (command: string, nlpOriginal?: string) => {
       const actionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const action: ActionEntry = {
         id: actionId,
@@ -270,6 +271,7 @@ async function main() {
         command,
         timestamp: Date.now(),
         session_id: state.activeSessionId ?? undefined,
+        nlpOriginal: nlpOriginal ?? undefined,
       };
 
       // Broadcast action start

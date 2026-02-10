@@ -391,7 +391,7 @@ export default function SessionBar({
 
       {/* Link to sessions list */}
       <Link
-        href="/apps/browser-viewer/sessions"
+        href="/sessions"
         style={{
           fontFamily: "var(--font-mono)",
           fontSize: "10px",
